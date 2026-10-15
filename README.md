@@ -55,7 +55,21 @@ Run one feature area:
 .\.venv\Scripts\python.exe dashboard_server.py
 ```
 
-Then open `http://127.0.0.1:5060`.
+Then open `http://127.0.0.1:5062`. Set `DASHBOARD_PORT` in `.env` to use another port.
+
+Use **Open Playwright Codegen** in the dashboard to open the configured application in the
+Playwright Inspector and record candidate locators.
+
+The **Scheduler** page supports one-time, weekly, and monthly test runs across configured
+environments and sections. Schedule definitions and run history are stored in SQLite under
+`reports/`; each scheduled run has a downloadable output log. Monthly dates missing from a month
+run on that month's final day, and due runs are caught up after a service restart. Configure
+`SCHEDULE_ENVIRONMENTS` as comma-separated environment aliases mapped to URL variable names, such
+as `QA=BASE_URL,UAT=UAT_BASE_URL`.
+
+Start the service with `python dashboard_server.py` to run the background scheduler worker. The
+service account needs write access to the configured scheduler database/log paths and `reports/`.
+Run only one dashboard service instance unless cross-process locking is implemented.
 
 ## Project Documents
 

@@ -205,9 +205,25 @@ class TestRailClient:
             raise TestRailError("add_case payload must include a title")
         return self._request("POST", f"add_case/{int(section_id)}", payload)
 
-    def get_cases(self, section_id: int | None = None, limit: int = 250):
+    def update_case(self, case_id: int, payload: dict):
+        if not payload:
+            raise TestRailError("update_case payload must not be empty")
+        return self._request("POST", f"update_case/{int(case_id)}", payload)
+
+    def get_cases(self, section_id: int | None = None, limit: int = 250, offset: int = 0):
         path = f"get_cases/{self.config.project_id}&suite_id={self.config.suite_id}&limit={int(limit)}"
+        path += f"&offset={int(offset)}"
         if section_id is not None:
             path += f"&section_id={int(section_id)}"
         response = self._request("GET", path)
         return response.get("cases", []) if isinstance(response, dict) else []
+
+    def get_all_cases(self, limit: int = 250):
+        cases = []
+        offset = 0
+        while True:
+            page = self.get_cases(limit=limit, offset=offset)
+            cases.extend(page)
+            if len(page) < limit:
+                return cases
+            offset += len(page)

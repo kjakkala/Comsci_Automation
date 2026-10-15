@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from html import escape
@@ -31,6 +32,35 @@ def browser_context_args(browser_context_args):
     return {**browser_context_args, "base_url": os.getenv("BASE_URL", "").rstrip("/") or None}
 
 
+@pytest.fixture
+def authenticated_login_page(page):
+    from utils.page_objects.login_page import LoginPage
+
+    login_page = LoginPage(page).goto()
+    login_page.login(os.environ["LOGIN_USERNAME"], os.environ["LOGIN_PASSWORD"])
+    login_page.expect_login_success()
+    return login_page
+
+
+@pytest.fixture
+def capture_screenshot(request, page):
+    """Capture named UI checkpoints for dashboard execution evidence."""
+
+    def capture(label: str) -> None:
+        dashboard_dir = Path(request.config.getoption("--dashboard-dir")).resolve()
+        screenshots_dir = dashboard_dir / "screenshots"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        safe_nodeid = request.node.nodeid.replace("::", "__").replace("/", "_").replace("\\", "_")
+        safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", label).strip("_").lower()
+        screenshot_path = screenshots_dir / f"{safe_nodeid}__{safe_label}.png"
+        page.screenshot(path=str(screenshot_path))
+        screenshots = getattr(request.node, "_dashboard_screenshots", [])
+        screenshots.append({"label": label, "path": screenshot_path.relative_to(dashboard_dir).as_posix()})
+        request.node._dashboard_screenshots = screenshots
+
+    return capture
+
+
 def _marker_value(item, name: str, default: str = "") -> str:
     marker = item.get_closest_marker(name)
     if not marker:
@@ -40,6 +70,13 @@ def _marker_value(item, name: str, default: str = "") -> str:
     if "value" in marker.kwargs:
         return str(marker.kwargs["value"])
     return default
+
+
+def _marker_values(item, name: str) -> list[str]:
+    marker = item.get_closest_marker(name)
+    if not marker:
+        return []
+    return [str(value) for value in marker.args if str(value).strip()]
 
 
 def _build_testrail_link(case_id: str) -> str:
@@ -52,32 +89,58 @@ def _build_testrail_link(case_id: str) -> str:
     return template.format(case_id=case_id)
 
 
+def pytest_collection_modifyitems(session, config, items):
+    """Maintains a persistent catalog of every known case, merged in (never shrunk) so
+    selective/partial runs don't drop cases that aren't part of this invocation."""
+    output_dir = Path(config.getoption("--dashboard-dir")).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = output_dir / "test_catalog.json"
+
+    existing = []
+    if catalog_path.exists():
+        try:
+            existing = json.loads(catalog_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = []
+    catalog = {entry["nodeid"]: entry for entry in existing}
+
+    for item in items:
+        testrail_case_id = _marker_value(item, "testrail_case", "")
+        catalog[item.nodeid] = {
+            "nodeid": item.nodeid,
+            "section": _marker_value(item, "page_section", "Uncategorized"),
+            "operation": _marker_value(item, "ui_flow", ""),
+            "title": _marker_value(item, "dashboard_title", item.name),
+            "labels": _marker_values(item, "test_labels"),
+            "testrail_case_id": testrail_case_id,
+            "testrail_case_url": _build_testrail_link(testrail_case_id),
+        }
+
+    catalog_path.write_text(json.dumps(list(catalog.values()), indent=2), encoding="utf-8")
+
+
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     """Stash the report for each phase (setup/call/teardown) on the test item."""
     outcome = yield
     rep = outcome.get_result()
     setattr(item, f"rep_{rep.when}", rep)
-
-
-@pytest.fixture(autouse=True)
-def _capture_failure_screenshot(request):
-    """On failure, capture a screenshot from the `page` fixture (if used) for the dashboard."""
-    yield
-    rep_call = getattr(request.node, "rep_call", None)
-    if rep_call is None or not rep_call.failed:
+    if rep.when != "call" or not (rep.passed or rep.failed):
         return
-    page = request.node.funcargs.get("page")
+    if getattr(item, "_dashboard_screenshots", []):
+        item._dashboard_screenshot = item._dashboard_screenshots[-1]["path"]
+        return
+    page = item.funcargs.get("page")
     if page is None:
         return
-    dashboard_dir = Path(request.config.getoption("--dashboard-dir")).resolve()
+    dashboard_dir = Path(item.config.getoption("--dashboard-dir")).resolve()
     screenshots_dir = dashboard_dir / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = request.node.nodeid.replace("::", "__").replace("/", "_").replace("\\", "_")
+    safe_name = item.nodeid.replace("::", "__").replace("/", "_").replace("\\", "_")
     screenshot_path = screenshots_dir / f"{safe_name}.png"
     try:
         page.screenshot(path=str(screenshot_path))
-        request.node._dashboard_screenshot = str(screenshot_path.relative_to(dashboard_dir))
+        item._dashboard_screenshot = screenshot_path.relative_to(dashboard_dir).as_posix()
     except Exception:
         pass
 
@@ -105,6 +168,7 @@ def pytest_runtest_teardown(item, nextitem):
     flow = _marker_value(item, "ui_flow", "")
     testrail_case_id = _marker_value(item, "testrail_case", "")
     title = _marker_value(item, "dashboard_title", item.name)
+    labels = _marker_values(item, "test_labels")
 
     details = ""
     if call_rep is not None and call_rep.longrepr:
@@ -120,12 +184,14 @@ def pytest_runtest_teardown(item, nextitem):
             "section": section,
             "operation": flow,
             "title": title,
+            "labels": labels,
             "testrail_case_id": testrail_case_id,
             "testrail_case_url": _build_testrail_link(testrail_case_id),
             "status": status,
             "duration": round(duration, 3),
             "details": details,
             "screenshot": getattr(item, "_dashboard_screenshot", ""),
+            "screenshots": getattr(item, "_dashboard_screenshots", []),
         }
     )
     return outcome

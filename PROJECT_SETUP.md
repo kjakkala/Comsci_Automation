@@ -42,6 +42,11 @@ Then open `.env` and fill in:
 - `TESTRAIL_PROJECT_ID` - Comsci project ID (confirm value; suite ID `64174` is already filled in)
 - `TESTRAIL_MILESTONE_ID` - milestone to publish results against
 - DB variables - leave blank until SQL Server access is granted
+- `SCHEDULE_ENVIRONMENTS` - comma-separated aliases mapped to URL variables, for example
+   `QA=BASE_URL,UAT=UAT_BASE_URL`. Put each environment URL in its own environment variable;
+   schedules persist only the alias, never credentials or URLs.
+- `SCHEDULER_DB_PATH` / `SCHEDULER_LOG_DIR` - persistent SQLite and run-log locations
+   (defaults are under `reports/`).
 
 Never commit the populated `.env` file.
 
@@ -56,8 +61,23 @@ in place, so this should run with no failures (skipped tests only) on a fresh ch
 ```powershell
 python dashboard_server.py
 ```
-Open `http://127.0.0.1:5060` in a browser. Use "Run Full Suite" to trigger a pytest run and
+Open `http://127.0.0.1:5062` in a browser. Use "Run Full Suite" to trigger a pytest run and
 "View Latest Dashboard Report" to see grouped pass/fail results.
+
+The Scheduler page supports one-time, weekly, and monthly runs. The background scheduler worker
+starts automatically with `python dashboard_server.py`; it uses the server's local time zone and
+catches up schedules that became due while the service was offline. Monthly schedules on a date
+missing from a month run on that month's final day.
+
+For a hosted deployment, run exactly one dashboard service instance unless cross-process locking
+is added. Give the service account write access to the configured scheduler database directory,
+log directory, and `reports/` (the existing test runner writes its reports there). Keep those paths
+on persistent storage. Use `python dashboard_server.py` as the service command so the scheduler
+worker starts with the web app; stopping the process stops both. Do not use a multi-worker WSGI
+configuration without adding cross-process scheduler and run locks.
+
+Use "Open Playwright Codegen" to open the configured `BASE_URL` in the Playwright Inspector.
+Interact with the page to record candidate selectors and verify them before adding them to a Page Object.
 
 ## 9. (Optional) Initialize Git
 ```powershell
