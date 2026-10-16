@@ -4,7 +4,7 @@ import pytest
 
 from utils.page_objects.login_page import LoginPage
 from utils.test_metadata import ui_case
-
+# Tests for login functionality
 
 @ui_case(
     section="Authentication",
